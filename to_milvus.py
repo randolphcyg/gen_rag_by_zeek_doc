@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ===================== 核心配置 =====================
 MILVUS_HOST = "localhost"
 MILVUS_PORT = 19530
-COLLECTION_NAME = "zeek_docs_v804_V5"
+COLLECTION_NAME = "zeek_docs_v804_V6"
 
 JSON_FILE_PATH = r"G:\share\goodjob\gen_rag_by_zeek_doc\zeek_rag.json"
 
@@ -32,8 +32,8 @@ BATCH_SIZE_MILVUS = 500
 MAX_SINGLE_TEXT_LEN = 10000
 MAX_BATCH_TOTAL_LEN = 8000
 
-MILVUS_CLEAN_MAX_LEN = 6000
-MILVUS_RAW_MAX_LEN = 8000
+MILVUS_CLEAN_MAX_LEN = 5500
+MILVUS_RAW_MAX_LEN = 7000
 
 
 # ===================== 处理类 =====================
@@ -196,14 +196,15 @@ class ZeekJsonProcessor:
         safe_records = []
 
         for r in records:
-            r["clean_content"] = self._truncate_for_milvus(
-                r.get("clean_content", ""), MILVUS_CLEAN_MAX_LEN
+            r["raw_content"] = self._safe_truncate_bytes(
+                r.get("raw_content", ""),
+                MILVUS_RAW_MAX_LEN
             )
-            r["raw_content"] = self._truncate_for_milvus(
-                r.get("raw_content", ""), MILVUS_RAW_MAX_LEN
+            r["clean_content"] = self._safe_truncate_bytes(
+                r.get("clean_content", ""),
+                MILVUS_CLEAN_MAX_LEN
             )
 
-            # embedding 维度校验
             emb = r.get("content_embedding")
             if not emb or len(emb) != EMBEDDING_DIM:
                 continue
@@ -220,6 +221,83 @@ class ZeekJsonProcessor:
     # JSON → Chunk → Milvus
     # -----------------------------
 
+    def _safe_truncate_bytes(self, text: str, max_bytes: int) -> str:
+        """
+        按 UTF-8 字节数裁剪，确保 Milvus VARCHAR 不越界
+        """
+        if not text:
+            return ""
+
+        text = text.replace("\x00", "").strip()
+        raw = text.encode("utf-8")
+
+        if len(raw) <= max_bytes:
+            return text
+
+        # 逐步回退，直到字节数合法
+        truncated = raw[:max_bytes]
+        while True:
+            try:
+                return truncated.decode("utf-8")
+            except UnicodeDecodeError:
+                truncated = truncated[:-1]
+
+    def _truncate_for_embedding(self, text: str) -> str:
+        """
+        给 embedding 用的强裁剪（token 友好）
+        """
+        if not text:
+            return ""
+
+        # nomic-embed-text 实测：4k chars 左右比较安全
+        SAFE_EMBED_CHAR_LEN = 3500
+
+        text = text.replace("\x00", "").strip()
+        if len(text) <= SAFE_EMBED_CHAR_LEN:
+            return text
+
+        # 优先按段落截断
+        parts = text.split("\n\n")
+        out = []
+        total = 0
+
+        for p in parts:
+            if total + len(p) > SAFE_EMBED_CHAR_LEN:
+                break
+            out.append(p)
+            total += len(p)
+
+        return "\n\n".join(out)[:SAFE_EMBED_CHAR_LEN]
+
+    def _merge_blocks_by_section(self, doc):
+        merged = {}
+
+        for section_path, block in self._iter_sections(doc.get("sections", [])):
+            key = section_path or doc.get("title", "")
+
+            if key not in merged:
+                merged[key] = []
+
+            if block.get("type") == "code":
+                merged[key].append(
+                    f"\n```{block.get('language','')}\n{block.get('code','')}\n```"
+                )
+            else:
+                merged[key].append(block.get("text", ""))
+
+        results = {}
+        for section, parts in merged.items():
+            text = "\n\n".join(parts).strip()
+
+            # 🚨 防止巨无霸 section
+            if len(text) > 12000:
+                text = text[:12000]
+
+            results[section] = text
+
+        return results
+
+
     def load_and_process_json(self):
         with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
             docs = json.load(f)
@@ -233,24 +311,36 @@ class ZeekJsonProcessor:
             doc_title = doc.get("title", "")
             doc_version = doc.get("version", "Zeek 8.0.4")
 
-            for section_path, block in self._iter_sections(doc.get("sections", [])):
-                text = block.get("text") or block.get("code")
-                clean_text = self._filter_text(text)
-                if not clean_text:
+            merged_sections = self._merge_blocks_by_section(doc)
+
+            for section_path, merged_text in merged_sections.items():
+                raw_text = self._safe_truncate_bytes(
+                    merged_text,
+                    MILVUS_RAW_MAX_LEN
+                )
+
+                embed_text = self._truncate_for_embedding(raw_text)
+                if not embed_text:
                     continue
+
+                clean_text = self._safe_truncate_bytes(
+                    embed_text,
+                    MILVUS_CLEAN_MAX_LEN
+                )
 
                 chunks.append({
                     "doc_version": doc_version,
                     "doc_path": doc_path,
                     "doc_title": doc_title,
-                    "doc_section": section_path or doc_title,
-                    "raw_content": text[:8000],
-                    "clean_content": clean_text[:6000],
+                    "doc_section": section_path,
+                    "raw_content": raw_text,
+                    "clean_content": clean_text,
                     "update_time": int(time.time())
                 })
 
-        logger.info(f"拆分得到 {len(chunks)} 个文本块")
+        logger.info(f"拆分得到 {len(chunks)} 个语义块")
 
+        # === 后续 embedding / milvus 不变 ===
         texts = [c["clean_content"] for c in chunks]
         embeddings = self.batch_generate_embeddings(texts)
 
