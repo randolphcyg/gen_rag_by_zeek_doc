@@ -61,99 +61,105 @@ def _process_node(node, current_section, docname, symbols, sections_stack):
     # 处理章节标题
     if isinstance(node, nodes.section):
         title_node = node.next_node(nodes.title)
-        if not title_node:
-            return
-
+        if not title_node: return
         section_title = title_node.astext()
-        
-        # 创建新章节
+
         new_section = {
-            "section_id": short_hash(f"{docname}:{'/'.join([s['title'] for s in sections_stack])}:{section_title}"),
+            "section_id": short_hash(f"{docname}:{section_title}"),
             "title": section_title,
             "blocks": [],
-            "subsections": []  # 添加子章节列表
+            "subsections": []
         }
-        
-        # 如果有父章节，添加到父章节的subsections中
         if sections_stack:
-            parent_section = sections_stack[-1]
-            parent_section["subsections"].append(new_section)
+            sections_stack[-1]["subsections"].append(new_section)
         else:
-            # 否则添加到根sections列表
             current_section.append(new_section)
-        
-        # 将新章节压入堆栈
+
         sections_stack.append(new_section)
-        
-        # 处理章节内的所有子节点
         for child in node.children:
-            _process_node(child, current_section, docname, symbols, sections_stack)
-        
-        # 处理完子节点后弹出堆栈
+            if not isinstance(child, nodes.title): # 避免标题重复进入 blocks
+                _process_node(child, current_section, docname, symbols, sections_stack)
         sections_stack.pop()
-    
-    # 只处理当前章节内的内容节点
+
     elif sections_stack:
         current_section_obj = sections_stack[-1]
-        
-        # 普通文本
+        cls_name = node.__class__.__name__.lower()
+
+        # 1. 普通文本
         if isinstance(node, nodes.paragraph):
             text = node.astext().strip()
             if text:
-                current_section_obj["blocks"].append({
-                    "block_id": short_hash(text),
-                    "type": "text",
-                    "text": text
-                })
-        
-        # 代码块
+                current_section_obj["blocks"].append({"block_id": short_hash(text), "type": "text", "text": text})
+
+        # 2. 代码块
         elif isinstance(node, nodes.literal_block):
             code = node.astext()
             current_section_obj["blocks"].append({
-                "block_id": short_hash(code),
-                "type": "code",
-                "language": node.get("language"),
-                "code": code
+                "block_id": short_hash(code), "type": "code",
+                "language": node.get("language", "text"), "code": code
             })
-        
-        # Note / Warning / Tip
-        elif isinstance(node, (nodes.note, nodes.warning, nodes.tip)):
-            text = node.astext()
-            current_section_obj["blocks"].append({
-                "block_id": short_hash(text),
-                "type": node.__class__.__name__.lower(),
-                "text": text
-            })
-        
-        # Zeek Domain 节点
-        else:
-            cls_name = node.__class__.__name__.lower()
-            if cls_name.startswith("zeek"):
+
+        # 3. 表格处理 (优化语义)
+        elif isinstance(node, nodes.table):
+            rows = []
+            for row in node.findall(nodes.row):
+                cells = [cell.astext().strip() for cell in row.findall(nodes.entry)]
+                if len(cells) >= 2:
+                    rows.append(f"- {cells[0]}: {cells[1]}")
+            if rows:
+                table_text = f"Data structure in {docname}:\n" + "\n".join(rows)
+                current_section_obj["blocks"].append({
+                    "block_id": short_hash(table_text), "type": "table", "text": table_text
+                })
+
+        # 4. Zeek 专用符号 (统一合并)
+        elif cls_name.startswith("zeek"):
+            sym_text = node.astext().strip()
+            if sym_text:
+                # 存入 symbols 列表
                 symbols.append({
-                    "symbol_id": short_hash(node.astext()),
+                    "symbol_id": short_hash(sym_text),
                     "symbol_type": cls_name,
-                    "text": node.astext(),
-                    "doc": docname,
-                    "section": "/".join([s["title"] for s in sections_stack])
+                    "text": sym_text,
+                    "section": sections_stack[-1]["title"]
+                })
+                # 同时存入 blocks 确保可被检索
+                current_section_obj["blocks"].append({
+                    "block_id": short_hash(sym_text), "type": "zeek_symbol", "text": f"Zeek {cls_name}: {sym_text}"
                 })
 
 
 def doctree_to_json(doctree, docname: str, version: str) -> dict:
+    # 路径感知分区逻辑
+    partition = "p_guides"
+    if "logs/" in docname: partition = "p_logs"
+    elif "script-reference" in docname or "frameworks" in docname: partition = "p_reference"
+
+    features = {"has_api": False, "has_cli": False, "has_code": False, "has_table": False}
+    for node in doctree.findall():
+        c = node.__class__.__name__.lower()
+        if c.startswith("zeek"): features["has_api"] = True
+        if isinstance(node, nodes.literal_block):
+            features["has_code"] = True
+            if node.get("language") in ["console", "bash"]: features["has_cli"] = True
+            if partition == "p_guides" and "install" in docname: partition = "p_ops" # 动态提升
+        if isinstance(node, nodes.table): features["has_table"] = True
+
     doc_json = {
         "doc_id": docname,
+        "partition": partition, # 👈 最终分区的关键字段
         "version": version,
-        "title": None,
+        "features": features,
+        "title": docname, # 默认标题
         "sections": [],
         "symbols": [],
     }
 
-    # 查找文档主标题
+    # 找到第一个真正的顶级标题
     for node in doctree.findall(nodes.title):
-        if doc_json["title"] is None:
-            doc_json["title"] = node.astext()
-            break
+        doc_json["title"] = node.astext()
+        break
 
-    # 使用递归方式处理嵌套章节
     sections_stack = []
     for node in doctree.children:
         _process_node(node, doc_json["sections"], docname, doc_json["symbols"], sections_stack)
@@ -175,7 +181,7 @@ def main():
     # -----------------------------
     # 现在zeek doc原素材合并到仓库 克隆仓库切换到lts分支即可看到\zeek\doc目录
     ZEEK_DOC_ROOT = Path(r"G:\share\goodjob\gen_rag_by_zeek_doc\zeek\doc")
-    OUTPUT_JSON = "zeek_rag.json"
+    OUTPUT_JSON = "modify_zeek_rag.json"
     ZEEK_VERSION = "Zeek 8.0.4"
 
     if not ZEEK_DOC_ROOT.exists():
