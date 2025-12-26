@@ -10,7 +10,6 @@ from pathlib import Path
 import tempfile
 import json
 import hashlib
-import shutil
 import sys
 
 
@@ -181,7 +180,7 @@ def main():
     # -----------------------------
     # 现在zeek doc原素材合并到仓库 克隆仓库切换到lts分支即可看到\zeek\doc目录
     ZEEK_DOC_ROOT = Path(r"G:\share\goodjob\gen_rag_by_zeek_doc\zeek\doc")
-    OUTPUT_JSON = "modify_zeek_rag.json"
+    OUTPUT_JSON = "zeek_rag.json"
     ZEEK_VERSION = "Zeek 8.0.4"
 
     if not ZEEK_DOC_ROOT.exists():

@@ -1,11 +1,9 @@
-import os
 import time
 import json
 import requests
 import logging
 from tqdm import tqdm
 from pymilvus import MilvusClient, DataType
-from pymilvus.milvus_client import IndexParams
 
 # ===================== 日志配置 =====================
 logging.basicConfig(
@@ -18,13 +16,13 @@ logger = logging.getLogger(__name__)
 # ===================== 核心配置 =====================
 MILVUS_HOST = "localhost"
 MILVUS_PORT = 19530
-COLLECTION_NAME = "zeek_rag_v8_0_4"  # 建议版本号入库名
+COLLECTION_NAME = "zeek_rag_v8_0_4"
 
-JSON_FILE_PATH = r"G:\share\goodjob\gen_rag_by_zeek_doc\modify_zeek_rag.json"
+JSON_FILE_PATH = r"G:\share\goodjob\gen_rag_by_zeek_doc\zeek_rag.json"
 
 OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "nomic-embed-text:latest"
-EMBEDDING_DIM = 768
+OLLAMA_MODEL = "bge-m3:latest"
+EMBEDDING_DIM = 1024
 
 BATCH_SIZE_EMBEDDING = 8
 BATCH_SIZE_MILVUS = 200
@@ -133,21 +131,29 @@ class ZeekMilvusPusher:
 
                 if not content or len(content) < 10: continue
 
+                # 融合 标题 + 路径 + 内容，增强向量在检索时的“辨识度”
+                enhanced_text = f"Document: {doc_meta['doc_title']}\nSection: {sec_title}\nContent: {content}"
+
                 pending_records.append({
                     **doc_meta,
                     "section_title": sec_title,
                     "content_type": block["type"],
-                    "raw_content": self._safe_truncate(content, MAX_BYTES_RAW)
+                    "raw_content": self._safe_truncate(content, MAX_BYTES_RAW),
+                    "text_to_embed": enhanced_text
                 })
 
-            # 2. 处理独立的 Symbols (高价值 API 定义)
+            # 2. 处理独立的 Symbols
             for sym in doc.get("symbols", []):
                 sym_text = f"Zeek {sym['symbol_type']} definition: {sym['text']}"
+                sec_name = sym.get("section", "API Reference")
+                # 同样对 Symbol 进行增强
+                enhanced_sym = f"Document: {doc_meta['doc_title']}\nSection: {sec_name}\nSymbol Definition: {sym_text}"
                 pending_records.append({
                     **doc_meta,
-                    "section_title": sym.get("section", "API Reference"),
+                    "section_title": sec_name,
                     "content_type": "symbol",
-                    "raw_content": self._safe_truncate(sym_text, MAX_BYTES_RAW)
+                    "raw_content": self._safe_truncate(sym_text, MAX_BYTES_RAW),
+                    "text_to_embed": enhanced_sym
                 })
 
         logger.info(f"解析完成，准备生成向量并入库，总 Chunk 数: {len(pending_records)}")
@@ -156,8 +162,8 @@ class ZeekMilvusPusher:
         for i in tqdm(range(0, len(pending_records), BATCH_SIZE_MILVUS), desc="入库进度"):
             batch = pending_records[i : i + BATCH_SIZE_MILVUS]
 
-            # Ollama 批量 Embedding 逻辑 (针对 batch 内部再次切分避免超载)
-            texts_to_embed = [r["raw_content"][:3000] for r in batch] # 限制 embedding 文本长度
+            # Ollama 批量 Embedding 逻辑
+            texts_to_embed = [r.pop("text_to_embed")[:3000] for r in batch]
 
             try:
                 embeddings = []
