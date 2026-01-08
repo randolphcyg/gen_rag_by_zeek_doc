@@ -177,7 +177,7 @@ class ZeekDocForcedParser:
 
 if __name__ == "__main__":
     # 现在zeek doc原素材合并到仓库 克隆仓库切换到lts分支即可看到\zeek\doc目录
-    DOC_ROOT = r"G:\share\goodjob\gen_rag_by_zeek_doc\zeek\doc"
+    DOC_ROOT = r"E:\share\goodjob\gen_rag_by_zeek_doc\zeek\doc"
 
     # 初始化并执行解析
     parser = ZeekDocForcedParser(DOC_ROOT)

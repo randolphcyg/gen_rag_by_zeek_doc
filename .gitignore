@@ -1,5 +1,8 @@
 .idea/
 __pycache__/
 *.json
-zeek/
 test_*.py
+zeek/
+zeek_docs_markdown/
+bge-m3/
+bge-reranker-v2-m3/
