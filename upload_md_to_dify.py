@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 DIFY_API_BASE = "http://localhost:5001/v1"
 API_KEY = "dataset-MF0p7JRI8hUO5nHXRJ73szfi"
-DATASET_ID = "19191596-0e1f-492c-ab31-15e11501cec4"
+DATASET_ID = "60f859e2-3143-48a9-bbb9-d6d1e5136f26"
 DOCS_DIR = r"E:\share\goodjob\gen_rag_by_zeek_doc\zeek_docs_markdown"
 
 MAX_WORKERS = 8
@@ -36,7 +36,7 @@ PROCESS_RULE = {
         "parent_child_indexing": {
             "enabled": True,
             "child_chunk_size": 400,
-            "child_chunk_overlap": 50
+            "child_chunk_overlap": 100
         }
     }
 }
@@ -91,7 +91,7 @@ def upload_single_file(filepath: Path, root_dir: Path):
     data = {
         "indexing_technique": "high_quality",
         "process_rule": json.dumps(PROCESS_RULE),
-        "doc_form": "text_model",
+        "doc_form": "hierarchical_model",
         "doc_language": "English"
     }
 

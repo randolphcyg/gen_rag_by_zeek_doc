@@ -70,11 +70,15 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
             process_doctree_to_md(child, builder, docname, depth + 1)
         return
 
+    # 合并清洗逻辑与生成逻辑
     if isinstance(node, nodes.title):
-        title_text = node.astext()
+        raw_title = node.astext()
 
-        # 【优化】如果标题和文件名高度相似（忽略大小写和横杠），则跳过不写
-        # 例如：文件名 get-started，标题 Get Started -> 跳过
+        # 1. 强力清洗：去掉首尾的引号、换行和多余空格
+        # (解决 zeek" 或 'zeek' 这种脏数据)
+        title_text = raw_title.strip().strip('"').strip("'")
+
+        # 2. 【优化】文件名查重逻辑
         clean_title = title_text.lower().replace(" ", "")
         clean_docname = docname.lower().replace("-", "").replace("_", "")
 
@@ -82,11 +86,12 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
         if depth == 2 and (clean_title == clean_docname):
             return
 
-            # 【降级】否则，将其降级为 #### (H4) 或更小，确保在 ### (H3) 之下
+        # 3. 【降级】将其降级为 #### (H4) 或更小
+        # 目的：确保正文内的标题不会触发 Dify 的切片（Dify只切 ###）
         header_level = min(depth + 2, 6)
 
         builder.add_blank()
-        builder.add(f"{'#' * header_level} {title_text}")
+        builder.add(f"{'#' * header_level} {title_text}") # 这里使用的是清洗后的 title_text
         builder.add_blank()
         return
 
@@ -102,12 +107,13 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
     # 4. 代码块 (Literal Block)
     if isinstance(node, nodes.literal_block):
         language = node.get("language", "text")
-        if language == "text" and "zeek" in str(node.source).lower():
+        # 修正: 检查 source 是否存在再转换字符串
+        source_str = str(node.source).lower() if node.source else ""
+        if language == "text" and "zeek" in source_str:
             language = "zeek"
         code_content = node.astext()
 
         builder.add_blank()
-        # 保留代码块标识，这对于 LLM 识别代码很重要
         builder.add(f"```{language}")
         builder.add(code_content)
         builder.add("```")
@@ -120,7 +126,7 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
         builder.add(f"- {text}")
         return
 
-    # 6. 表格 (Table) -> 【核心修改：扁平化处理】
+    # 6. 表格 (Table)
     if isinstance(node, nodes.table):
         rows = []
         tgroup = node.next_node(nodes.tgroup)
@@ -141,32 +147,23 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
 
         if rows:
             builder.add_blank()
-            # 策略：如果列数很少(<=3)，做成 Key: Value 形式
-            # 如果是复杂表格，还是保留 Markdown 格式，但去掉 ASCII 装饰
-
             if headers:
                 builder.add(f"**Table Data ({', '.join(headers)}):**")
                 for row in rows:
-                    # 扁平化： "Header1: Value1; Header2: Value2"
-                    # 这种格式对 Dify 切分极其友好，切断了也保留了上下文
                     line_items = []
                     for i, cell in enumerate(row):
                         h = headers[i] if i < len(headers) else f"Col{i}"
-                        # 去除单元格里的换行
                         clean_cell = cell.replace('\n', ' ')
                         if clean_cell:
                             line_items.append(f"{h}: {clean_cell}")
-
                     builder.add("- " + "; ".join(line_items))
             else:
-                # 没有表头的表格，直接做成列表
                 for row in rows:
                     builder.add("- " + " | ".join(row))
-
             builder.add_blank()
         return
 
-    # 7. Zeek 专用域节点 (desc) -> 【核心修改：作为标题处理】
+    # 7. Zeek 专用域节点 (desc)
     if node.__class__.__name__ == "desc":
         builder.add_blank()
 
@@ -178,13 +175,11 @@ def process_doctree_to_md(node, builder: MarkdownBuilder, docname="", depth=1):
 
         if sigs:
             for s in sigs:
-                # 【修改点】不要用 **Zeek type**，改用 ### 标题
-                # 这样 Dify 的父子索引会将每个 Zeek 定义视为一个独立的父块！
+                # 关键点：使用 ### (H3) 触发 Dify 切片
                 builder.add_blank()
                 builder.add(f"### {obj_type}: {s}")
                 builder.add_blank()
 
-        # 处理描述内容
         for child in node.children:
             if not isinstance(child, addnodes.desc_signature):
                 process_doctree_to_md(child, builder, docname, depth)
@@ -233,7 +228,9 @@ def main():
             doctree = app.env.get_doctree(docname)
 
             builder = MarkdownBuilder()
-            builder.add(f"### {docname}") # 添加文件名为一级标题
+            clean_name = docname.replace('"', '').replace("'", "").strip()
+            builder.add(f"# {clean_name}")
+            builder.add_blank()
 
             process_doctree_to_md(doctree, builder, docname=docname)
 
