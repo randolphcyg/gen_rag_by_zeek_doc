@@ -2,8 +2,8 @@
 __pycache__/
 *.json
 test_*.py
-zeek/
-zeek_docs_markdown/
-zeek_docs_markdown_flattened/
+zeek_src/
+zeek_docs_md/
+zeek_docs_flattened/
 bge-m3/
 bge-reranker-v2-m3/

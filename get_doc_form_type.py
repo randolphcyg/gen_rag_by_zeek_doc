@@ -6,7 +6,7 @@ import sys
 
 DIFY_API_BASE = "http://localhost:5001/v1"
 API_KEY = "dataset-MF0p7JRI8hUO5nHXRJ73szfi"
-TARGET_DATASET_ID = "0d0c6918-df07-4541-a619-4e7faf146e0f"
+TARGET_DATASET_ID = "ec367307-db47-4449-9624-6e8ae9d6c405"
 
 # =================================================
 
